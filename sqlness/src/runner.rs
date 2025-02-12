@@ -135,7 +135,7 @@ impl<E: EnvController> Runner<E> {
                 loop {
                     // Try to get next case from the queue
                     let next_case = {
-                        let mut queue = case_queue.lock().unwrap();
+                        let mut queue = case_queue.lock().expect("Failed to lock case_queue mutex");
                         if queue.is_empty() {
                             break;
                         }
@@ -157,10 +157,10 @@ impl<E: EnvController> Runner<E> {
                                 db_idx, case_name, e
                             );
                             if fail_fast {
-                                errors.lock().unwrap().push((case_name, e));
+                                errors.lock().expect("Failed to acquire lock on errors").push((case_name, e));
                                 return;
                             }
-                            errors.lock().unwrap().push((case_name, e));
+                            errors.lock().expect("Failed to acquire lock on errors").push((case_name, e));
                         }
                     }
                 }
