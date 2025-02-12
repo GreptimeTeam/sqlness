@@ -12,7 +12,7 @@ struct MyDB;
 impl Database for MyDB {
     async fn query(&self, _context: QueryContext, _query: String) -> Box<dyn Display> {
         // Implement query logic here
-        return Box::new("ok".to_string());
+        Box::new("ok")
     }
 }
 

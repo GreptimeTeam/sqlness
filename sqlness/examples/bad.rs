@@ -16,7 +16,7 @@ struct MyDB;
 #[async_trait]
 impl Database for MyDB {
     async fn query(&self, _ctx: QueryContext, _query: String) -> Box<dyn Display> {
-        return Box::new("Unexpected".to_string());
+        Box::new("Unexpected")
     }
 }
 
