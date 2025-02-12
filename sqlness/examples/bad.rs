@@ -24,7 +24,7 @@ impl Database for MyDB {
 const LOCK_FILE: &str = "/tmp/sqlness-bad-example.lock";
 
 impl MyDB {
-    fn new(_env: &str, _config: Option<&Path>) -> Self {
+    fn new(_env: &str, _id: usize, _config: Option<&Path>) -> Self {
         File::create(LOCK_FILE).unwrap();
         MyDB
     }
@@ -38,8 +38,8 @@ impl MyDB {
 impl EnvController for MyController {
     type DB = MyDB;
 
-    async fn start(&self, env: &str, config: Option<&Path>) -> Self::DB {
-        MyDB::new(env, config)
+    async fn start(&self, env: &str, id: usize, config: Option<&Path>) -> Self::DB {
+        MyDB::new(env, id, config)
     }
 
     async fn stop(&self, _env: &str, database: Self::DB) {
