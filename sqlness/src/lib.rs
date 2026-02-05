@@ -69,3 +69,4 @@ pub use database::Database;
 pub use environment::EnvController;
 pub use error::SqlnessError;
 pub use runner::Runner;
+pub use runner::SKIP_MARKER_PREFIX;

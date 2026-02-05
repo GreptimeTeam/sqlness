@@ -16,6 +16,11 @@ use crate::case::TestCase;
 use crate::error::{Result, SqlnessError};
 use crate::{config::Config, environment::EnvController};
 
+/// Prefix for SKIP markers in result files.
+/// When comparing expected vs actual results, differences that consist solely
+/// of SKIP markers are treated as "no difference" (test passes).
+pub const SKIP_MARKER_PREFIX: &str = "-- SQLNESS_SKIP:";
+
 /// The entrypoint of this crate.
 ///
 /// To run your integration test cases, simply [`new`] a `Runner` and [`run`] it.
@@ -217,13 +222,22 @@ impl<E: EnvController> Runner<E> {
         case.execute(db, &mut new_result).await?;
         let elapsed = timer.elapsed();
 
-        // Truncate and write new result back
-        result_file.set_len(0)?;
-        result_file.rewind()?;
-        result_file.write_all(new_result.get_ref())?;
-
         // Compare old and new result
         let new_result = String::from_utf8(new_result.into_inner()).expect("not utf8 string");
+        let diff_only_skip_markers = self.are_all_changes_skip_markers_from_strings(&old_result, &new_result);
+
+        // If diff is only SKIP markers, write back old_result to keep result file clean
+        let result_to_write = if diff_only_skip_markers {
+            &old_result
+        } else {
+            &new_result
+        };
+
+        // Truncate and write result back
+        result_file.set_len(0)?;
+        result_file.rewind()?;
+        result_file.write_all(result_to_write.as_bytes())?;
+
         if let Some(diff) = self.compare(&old_result, &new_result) {
             println!("Result unexpected, path:{case_path:?}");
             println!("{diff}");
@@ -282,12 +296,167 @@ impl<E: EnvController> Runner<E> {
     /// Compare result, return None if them are the same, else return diff changes
     fn compare(&self, expected: &str, actual: &str) -> Option<String> {
         let diff = diff_lines(expected, actual);
-        let diff = diff.diff();
-        let is_different = diff.iter().any(|d| !matches!(d, DiffOp::Equal(_)));
+        let diff_ops = diff.diff();
+
+        // Check if all differences are only SKIP markers
+        if self.are_all_changes_skip_markers(&diff_ops) {
+            return None; // Treat as no difference
+        }
+
+        let is_different = diff_ops.iter().any(|d| !matches!(d, DiffOp::Equal(_)));
         if is_different {
-            return Some(format!("{}", SliceChangeset { diff }));
+            return Some(format!("{}", SliceChangeset { diff: diff_ops }));
         }
 
         None
+    }
+
+    /// Checks if a line is a SKIP marker
+    fn is_skip_marker(line: &str) -> bool {
+        line.trim().starts_with(SKIP_MARKER_PREFIX)
+    }
+
+    /// Checks if all differences are only SKIP markers
+    ///
+    /// Returns true if:
+    /// - No differences between expected and actual, OR
+    /// - All inserted/deleted/replaced lines are SKIP markers
+    fn are_all_changes_skip_markers<'a>(
+        &self,
+        diff_ops: &'a [DiffOp<'a, &'a str>],
+    ) -> bool {
+        for op in diff_ops {
+            match op {
+                DiffOp::Equal(_) => continue,
+                DiffOp::Insert(lines) | DiffOp::Remove(lines) => {
+                    if !lines.iter().all(|line| Self::is_skip_marker(line)) {
+                        return false;
+                    }
+                }
+                DiffOp::Replace(_old_lines, new_lines) => {
+                    if !new_lines.iter().all(|line| Self::is_skip_marker(line)) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Convenience method to check if two strings differ only by SKIP markers
+    fn are_all_changes_skip_markers_from_strings(&self, expected: &str, actual: &str) -> bool {
+        let diff = diff_lines(expected, actual);
+        self.are_all_changes_skip_markers(&diff.diff())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::Database;
+    use crate::environment::EnvController;
+    use async_trait::async_trait;
+    use std::fmt::Display;
+    use std::path::Path;
+
+    struct MockDatabase;
+
+    #[async_trait]
+    impl Database for MockDatabase {
+        async fn query(
+            &self,
+            _ctx: crate::case::QueryContext,
+            _query: String,
+        ) -> Box<dyn Display> {
+            Box::new("mock result")
+        }
+    }
+
+    struct MockEnvController;
+
+    #[async_trait]
+    impl EnvController for MockEnvController {
+        type DB = MockDatabase;
+
+        async fn start(&self, _env: &str, _config: Option<&Path>) -> Self::DB {
+            MockDatabase
+        }
+
+        async fn stop(&self, _env: &str, _database: Self::DB) {}
+    }
+
+    fn create_test_runner() -> Runner<MockEnvController> {
+        let config = Config {
+            case_dir: ".".to_string(),
+            test_case_extension: "sql".to_string(),
+            result_extension: "result".to_string(),
+            interceptor_prefix: "-- SQLNESS".to_string(),
+            env_config_file: "config.toml".to_string(),
+            fail_fast: true,
+            test_filter: ".*".to_string(),
+            env_filter: ".*".to_string(),
+            follow_links: true,
+            interceptor_registry: crate::interceptor::Registry::default(),
+        };
+        Runner::new(config, MockEnvController)
+    }
+
+    #[test]
+    fn test_is_skip_marker() {
+        assert!(Runner::<MockEnvController>::is_skip_marker(
+            "-- SQLNESS_SKIP: version 0.14.0 < required 0.15.0"
+        ));
+        assert!(Runner::<MockEnvController>::is_skip_marker(
+            "  -- SQLNESS_SKIP: some reason"
+        ));
+        assert!(!Runner::<MockEnvController>::is_skip_marker(
+            "-- SQLNESS TEMPLATE {}"
+        ));
+        assert!(!Runner::<MockEnvController>::is_skip_marker("SELECT 1;"));
+    }
+
+    #[test]
+    fn test_are_all_changes_skip_markers_no_changes() {
+        let runner = create_test_runner();
+        let diff = diff_lines("SELECT 1;\n1", "SELECT 1;\n1");
+        assert!(runner.are_all_changes_skip_markers(&diff.diff()));
+    }
+
+    #[test]
+    fn test_are_all_changes_skip_markers_only_skip_added() {
+        let runner = create_test_runner();
+        let diff = diff_lines(
+            "SELECT 1;\n1",
+            "SELECT 1;\n1\n-- SQLNESS_SKIP: version 0.14.0 < required 0.15.0",
+        );
+        assert!(runner.are_all_changes_skip_markers(&diff.diff()));
+    }
+
+    #[test]
+    fn test_are_all_changes_skip_markers_skip_replacing_content() {
+        let runner = create_test_runner();
+        let diff = diff_lines(
+            "SELECT 1;\n1",
+            "SELECT 1;\n-- SQLNESS_SKIP: version 0.14.0 < required 0.15.0",
+        );
+        assert!(runner.are_all_changes_skip_markers(&diff.diff()));
+    }
+
+    #[test]
+    fn test_are_all_changes_skip_markers_real_difference() {
+        let runner = create_test_runner();
+        let diff = diff_lines("SELECT 1;\n1", "SELECT 1;\n2");
+        assert!(!runner.are_all_changes_skip_markers(&diff.diff()));
+    }
+
+    #[test]
+    fn test_are_all_changes_skip_markers_mixed_changes() {
+        let runner = create_test_runner();
+        let diff = diff_lines(
+            "SELECT 1;\n1",
+            "SELECT 1;\n2\n-- SQLNESS_SKIP: version 0.14.0 < required 0.15.0",
+        );
+        assert!(!runner.are_all_changes_skip_markers(&diff.diff()));
     }
 }
