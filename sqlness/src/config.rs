@@ -41,6 +41,11 @@ pub struct Config {
     /// Default value: 1
     #[builder(default = "Config::default_parallelism()")]
     pub parallelism: usize,
+    /// Number of environments to run in parallel.
+    ///
+    /// Default value: 1
+    #[builder(default = "Config::default_env_parallelism()")]
+    pub env_parallelism: usize,
 }
 
 impl Config {
@@ -81,6 +86,10 @@ impl Config {
     }
 
     fn default_parallelism() -> usize {
+        1
+    }
+
+    fn default_env_parallelism() -> usize {
         1
     }
 }
