@@ -10,13 +10,15 @@ use crate::{
     error::SqlnessError,
     interceptor::{
         arg::ArgInterceptorFactory, env::EnvInterceptorFactory, replace::ReplaceInterceptorFactory,
-        sort_result::SortResultInterceptorFactory, template::TemplateInterceptorFactory,
+        skip::SkipInterceptorFactory, sort_result::SortResultInterceptorFactory,
+        template::TemplateInterceptorFactory,
     },
 };
 
 pub mod arg;
 pub mod env;
 pub mod replace;
+pub mod skip;
 pub mod sleep;
 pub mod sort_result;
 pub mod template;
@@ -112,6 +114,10 @@ fn builtin_interceptors() -> HashMap<String, InterceptorFactoryRef> {
         (
             sleep::PREFIX.to_string(),
             Arc::new(sleep::SleepInterceptorFactory {}) as _,
+        ),
+        (
+            skip::PREFIX.to_string(),
+            Arc::new(SkipInterceptorFactory {}) as _,
         ),
     ]
     .into_iter()
