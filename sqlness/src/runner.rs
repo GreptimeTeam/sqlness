@@ -16,7 +16,7 @@ use walkdir::WalkDir;
 
 use crate::case::TestCase;
 use crate::error::{Result, SqlnessError};
-use crate::{config::Config, environment::EnvController};
+use crate::{config::Config, database::Database, environment::EnvController};
 
 /// The entrypoint of this crate.
 ///
@@ -251,6 +251,7 @@ impl<E: EnvController> Runner<E> {
         result_file.read_to_string(&mut old_result)?;
 
         // Execute testcase
+        db.before_case().await;
         let mut new_result = Cursor::new(Vec::new());
         let timer = Instant::now();
         case.execute(db, &mut new_result).await?;
@@ -405,6 +406,82 @@ mod tests {
         async fn query(&self, _context: QueryContext, _query: String) -> Box<dyn Display> {
             Box::new("")
         }
+    }
+
+    struct HookEnvController {
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl EnvController for HookEnvController {
+        type DB = HookDb;
+
+        async fn start(&self, _env: &str, _id: usize, _config: Option<&Path>) -> Self::DB {
+            HookDb {
+                events: self.events.clone(),
+            }
+        }
+
+        async fn stop(&self, _env: &str, _database: Self::DB) {}
+    }
+
+    struct HookDb {
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl Database for HookDb {
+        async fn before_case(&self) {
+            self.events.lock().unwrap().push("hook".to_string());
+        }
+
+        async fn query(&self, _context: QueryContext, query: String) -> Box<dyn Display> {
+            self.events.lock().unwrap().push(query);
+            Box::new("")
+        }
+    }
+
+    #[tokio::test]
+    async fn before_case_runs_once_per_case_before_queries_even_after_mismatch() {
+        let case_dir = new_case_dir(&["env"]);
+        let first_case = case_dir.join("env").join("a");
+        let second_case = case_dir.join("env").join("b");
+        for case in [&first_case, &second_case] {
+            fs::write(case.with_extension("sql"), "SELECT 1;\nSELECT 2;\n").unwrap();
+            fs::write(case.with_extension("result"), "unexpected").unwrap();
+        }
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let config = ConfigBuilder::default()
+            .case_dir(case_dir.to_string_lossy().to_string())
+            .build()
+            .unwrap();
+        let runner = Runner::new(
+            config,
+            HookEnvController {
+                events: events.clone(),
+            },
+        );
+        let db = HookDb {
+            events: events.clone(),
+        };
+
+        assert!(!runner.run_single_case(&db, &first_case).await.unwrap());
+        assert!(!runner.run_single_case(&db, &second_case).await.unwrap());
+
+        let events = events.lock().unwrap();
+        assert_eq!(
+            *events,
+            [
+                "hook",
+                "SELECT 1;",
+                "SELECT 2;",
+                "hook",
+                "SELECT 1;",
+                "SELECT 2;",
+            ]
+        );
+        fs::remove_dir_all(case_dir).unwrap();
     }
 
     #[tokio::test]

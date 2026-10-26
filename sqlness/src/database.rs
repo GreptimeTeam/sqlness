@@ -16,5 +16,7 @@ use crate::case::QueryContext;
 /// [`EnvController::start`]: crate::EnvController#tymethod.start
 #[async_trait]
 pub trait Database: Send + Sync {
+    async fn before_case(&self) {}
+
     async fn query(&self, context: QueryContext, query: String) -> Box<dyn Display>;
 }
